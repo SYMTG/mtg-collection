@@ -24,7 +24,7 @@ const PROJECTS: Project[] = [
     name: "Senyacup",
     code: "SC",
     description: "Game design project — equipment, characters, world.",
-    live: false,
+    live: true,
     accent: "text-fuchsia-400 bg-fuchsia-950/40",
   },
   {
