@@ -15,6 +15,11 @@ import {
   borderLabel,
   type CollectionEntry,
 } from "@/lib/cardDisplay";
+import { effectivePriceMap, priceKey, type PriceRow } from "@/lib/priceHistory";
+import { HistoryChart } from "@/components/HistoryChart";
+
+const CURRENT_YEAR = 2026;
+const PRICE_YEARS = Array.from({ length: CURRENT_YEAR - 2014 }, (_, i) => 2015 + i);
 
 type CardRow = {
   id: string;
@@ -31,7 +36,7 @@ type CardRow = {
 type SortKey = "collector_number" | "name" | "rarity";
 
 const ROW_GRID = "grid-cols-[40px_1fr_44px_92px_140px_60px_60px]";
-const OWNED_GRID = "grid-cols-[40px_1fr_100px_70px_60px_70px_80px]";
+const OWNED_GRID = "grid-cols-[40px_1fr_100px_70px_60px_70px_80px_70px]";
 
 export default function SetPage({
   params,
@@ -62,6 +67,8 @@ export default function SetPage({
   const [collectionByCard, setCollectionByCard] = useState<Record<string, CollectionEntry[]>>({});
   const [collectionValue, setCollectionValue] = useState<number | null>(null);
   const [priceByKey, setPriceByKey] = useState<Map<string, number>>(new Map());
+  const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
+  const [openHistory, setOpenHistory] = useState<string | null>(null);
 
   // Reset per-set state during render (not in the effect) when the route's
   // `code` changes, so the effect below only ever performs the fetch.
@@ -72,6 +79,8 @@ export default function SetPage({
     setError(null);
     setCollectionByCard({});
     setCollectionValue(null);
+    setPriceRows([]);
+    setOpenHistory(null);
   }
 
   useEffect(() => {
@@ -110,17 +119,16 @@ export default function SetPage({
         }
         const { data: prices } = await supabase
           .from("price_history")
-          .select("card_id,finish,price_usd")
-          .in("card_id", ids)
-          .eq("year", 2026);
+          .select("card_id,finish,year,price_usd,source")
+          .in("card_id", ids);
         if (cancelled) return;
-        const priceMap = new Map<string, number>();
-        for (const p of prices ?? []) {
-          priceMap.set(`${p.card_id}|${p.finish}`, p.price_usd);
-        }
+        const rows = (prices ?? []) as PriceRow[];
+        setPriceRows(rows);
+        const priceMap = effectivePriceMap(rows);
         setPriceByKey(priceMap);
         const total = items.reduce(
-          (sum, item) => sum + (priceMap.get(`${item.card_id}|${item.finish}`) ?? 0) * item.quantity,
+          (sum, item) =>
+            sum + (priceMap.get(priceKey(item.card_id, item.finish, CURRENT_YEAR)) ?? 0) * item.quantity,
           0
         );
         setCollectionValue(total);
@@ -162,12 +170,24 @@ export default function SetPage({
       const card = cardsById.get(cardId);
       if (!card) continue;
       for (const item of entries) {
-        const price = priceByKey.get(`${cardId}|${item.finish}`) ?? 0;
+        const price = priceByKey.get(priceKey(cardId, item.finish, CURRENT_YEAR)) ?? 0;
         rows.push({ card, item, price });
       }
     }
     return rows.sort((a, b) => b.price * b.item.quantity - a.price * a.item.quantity);
   }, [cards, collectionByCard, priceByKey]);
+
+  const historyByCardFinish = useMemo(() => {
+    const map = new Map<string, { manual: Record<number, number>; scryfall: Record<number, number> }>();
+    for (const row of priceRows) {
+      const key = `${row.card_id}|${row.finish}`;
+      if (!map.has(key)) map.set(key, { manual: {}, scryfall: {} });
+      const entry = map.get(key)!;
+      if (row.source === "scryfall") entry.scryfall[row.year] = row.price_usd;
+      else entry.manual[row.year] = row.price_usd;
+    }
+    return map;
+  }, [priceRows]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -476,12 +496,23 @@ export default function SetPage({
               <div className="text-right">Qty</div>
               <div className="text-right">Cost</div>
               <div className="text-right">Value</div>
+              <div className="text-right">History</div>
             </div>
 
             <div>
-              {ownedRows.map(({ card, item, price }) => (
+              {ownedRows.map(({ card, item, price }) => {
+                const historyKey = `${card.id}|${item.finish}`;
+                const history = historyByCardFinish.get(historyKey);
+                const isOpen = openHistory === item.id;
+                const series = history
+                  ? [
+                      { label: "Manual", color: "#818cf8", byYear: history.manual },
+                      { label: "Scryfall", color: "#34d399", byYear: history.scryfall },
+                    ].filter((s) => Object.keys(s.byYear).length > 0)
+                  : [];
+                return (
+                <Fragment key={item.id}>
                 <div
-                  key={item.id}
                   className={`grid ${OWNED_GRID} items-center gap-2 border-b border-zinc-800 px-1 py-2.5`}
                 >
                   <div className="font-mono text-[13px] tabular-nums text-zinc-500">{card.collector_number}</div>
@@ -527,8 +558,32 @@ export default function SetPage({
                   >
                     ${(price * item.quantity).toFixed(2)}
                   </div>
+                  <div className="text-right">
+                    <button
+                      onClick={() => setOpenHistory((cur) => (cur === item.id ? null : item.id))}
+                      disabled={series.length === 0}
+                      className="rounded-md border border-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:border-indigo-400 hover:text-indigo-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-zinc-800 disabled:hover:text-zinc-400"
+                    >
+                      {isOpen ? "Hide" : "History"}
+                    </button>
+                  </div>
                 </div>
-              ))}
+                {isOpen && series.length > 0 && (
+                  <div className="border-b border-zinc-800 bg-zinc-950/60 px-1 py-4">
+                    <HistoryChart series={series} years={PRICE_YEARS} />
+                    <div className="mt-2 flex gap-4 text-[11px] text-zinc-500">
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-sm" style={{ background: "#818cf8" }} /> Manual (Excel)
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-sm" style={{ background: "#34d399" }} /> Scryfall sync
+                      </span>
+                    </div>
+                  </div>
+                )}
+                </Fragment>
+                );
+              })}
               {ownedRows.length === 0 && (
                 <div className="px-1 py-10 text-center text-sm text-zinc-500">
                   You don&apos;t own any cards from this set yet

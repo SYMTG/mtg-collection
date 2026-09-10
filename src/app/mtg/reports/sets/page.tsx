@@ -7,6 +7,7 @@ import setsData from "@/data/sets.json";
 import { parseSet, type RawSet } from "@/lib/setIcon";
 import { supabase } from "@/lib/supabaseClient";
 import { HistoryChart } from "@/components/HistoryChart";
+import { effectivePriceMap, priceKey } from "@/lib/priceHistory";
 
 const LATEST_YEAR = 2026;
 const YEARS = Array.from({ length: 12 }, (_, i) => 2015 + i); // 2015..2026
@@ -84,16 +85,13 @@ function SetValueInner() {
 
       const { data: prices, error: pricesErr } = await supabase
         .from("price_history")
-        .select("card_id,finish,year,price_usd")
+        .select("card_id,finish,year,price_usd,source")
         .in("card_id", cardIds);
       if (pricesErr) {
         if (!cancelled) setError(pricesErr.message);
         return;
       }
-      const priceMap = new Map<string, number>();
-      for (const p of prices ?? []) {
-        priceMap.set(`${p.card_id}|${p.finish}|${p.year}`, p.price_usd);
-      }
+      const priceMap = effectivePriceMap(prices ?? []);
 
       const bySet = new Map<string, SetStat>();
       for (const item of items) {
@@ -107,7 +105,7 @@ function SetValueInner() {
         stat.cards += item.quantity;
 
         for (const year of YEARS) {
-          const price = priceMap.get(`${item.card_id}|${item.finish}|${year}`) ?? 0;
+          const price = priceMap.get(priceKey(item.card_id, item.finish, year)) ?? 0;
           stat.byYear[year] = (stat.byYear[year] ?? 0) + price * item.quantity;
         }
         stat.value = stat.byYear[LATEST_YEAR] ?? 0;
@@ -251,7 +249,7 @@ function SetValueInner() {
         </div>
         {isOpen && (
           <div className="border-b border-zinc-800 bg-zinc-950/60 px-1 py-4">
-            <HistoryChart byYear={stat.byYear} years={YEARS} />
+            <HistoryChart series={[{ label: "Value", color: "#818cf8", byYear: stat.byYear }]} years={YEARS} />
           </div>
         )}
       </Fragment>

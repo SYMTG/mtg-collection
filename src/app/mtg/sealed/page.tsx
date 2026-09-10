@@ -347,7 +347,7 @@ export default function StoragePage() {
               {isOpen && product && (
                 <div className="border-b border-zinc-800 bg-zinc-950/60 px-1 py-4">
                   {history ? (
-                    <HistoryChart byYear={history} years={SEALED_YEARS} />
+                    <HistoryChart series={[{ label: "Price", color: "#818cf8", byYear: history }]} years={SEALED_YEARS} />
                   ) : (
                     <p className="text-sm text-zinc-500">No price history yet for this product.</p>
                   )}

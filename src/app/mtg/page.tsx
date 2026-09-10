@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import setsData from "@/data/sets.json";
 import { parseSet, type RawSet, type ParsedSet } from "@/lib/setIcon";
 import { supabase } from "@/lib/supabaseClient";
+import { effectivePriceMap, priceKey } from "@/lib/priceHistory";
 
 type SortKey = "n" | "q" | "d" | "value";
 
@@ -48,17 +49,16 @@ function HomeInner() {
 
     const { data: prices } = await supabase
       .from("price_history")
-      .select("card_id,finish,price_usd")
+      .select("card_id,finish,year,price_usd,source")
       .in("card_id", cardIds)
       .eq("year", LATEST_YEAR);
-    const priceMap = new Map<string, number>();
-    for (const p of prices ?? []) priceMap.set(`${p.card_id}|${p.finish}`, p.price_usd);
+    const priceMap = effectivePriceMap(prices ?? []);
 
     const valMap = new Map<string, number>();
     for (const row of items) {
       const code = row.cards?.set_code;
       if (!code) continue;
-      const price = priceMap.get(`${row.card_id}|${row.finish}`) ?? 0;
+      const price = priceMap.get(priceKey(row.card_id, row.finish, LATEST_YEAR)) ?? 0;
       valMap.set(code, (valMap.get(code) ?? 0) + price * row.quantity);
     }
     return { ownedQtyByCode: qtyMap, valueByCode: valMap };
@@ -103,7 +103,10 @@ function HomeInner() {
       }
 
       const year = new Date().getFullYear();
-      const rowByKey = new Map<string, { card_id: string; finish: string; year: number; price_usd: number }>();
+      const rowByKey = new Map<
+        string,
+        { card_id: string; finish: string; year: number; price_usd: number; source: string }
+      >();
       for (const item of items ?? []) {
         const prices = scryfallPrices.get(item.card_id);
         if (!prices) continue;
@@ -115,6 +118,7 @@ function HomeInner() {
           finish: item.finish,
           year,
           price_usd: parseFloat(raw),
+          source: "scryfall",
         });
       }
       const rows = [...rowByKey.values()];
@@ -122,7 +126,7 @@ function HomeInner() {
       if (rows.length) {
         const { error } = await supabase
           .from("price_history")
-          .upsert(rows, { onConflict: "card_id,finish,year" });
+          .upsert(rows, { onConflict: "card_id,finish,year,source" });
         if (error) throw error;
       }
       setSyncMessage(`Updated ${rows.length} price${rows.length === 1 ? "" : "s"} for ${year}.`);
