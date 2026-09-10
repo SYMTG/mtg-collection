@@ -6,9 +6,11 @@ import { useSearchParams } from "next/navigation";
 import setsData from "@/data/sets.json";
 import { parseSet, type RawSet } from "@/lib/setIcon";
 import { supabase } from "@/lib/supabaseClient";
+import { HistoryChart } from "@/components/HistoryChart";
 
 const LATEST_YEAR = 2026;
 const YEARS = Array.from({ length: 12 }, (_, i) => 2015 + i); // 2015..2026
+const ROW_GRID = "grid-cols-[1fr_70px_90px_70px]";
 
 type SetStat = {
   code: string;
@@ -208,67 +210,49 @@ function SetValueInner() {
 
   function sortArrow(key: SortKey) {
     if (sortKey !== key) return "";
-    return sortDir === 1 ? "▲" : "▼";
+    return sortDir === 1 ? "▲" : "▾";
   }
 
   function renderRow(stat: SetStat, isChild: boolean) {
     const info = setInfoByCode.get(stat.code);
     const historyKey = stat.code + (isChild ? "" : ":total");
+    const isOpen = openHistory === historyKey;
     return (
       <Fragment key={historyKey}>
-        <tr className="border-b border-zinc-100 last:border-0 hover:bg-stone-200 dark:border-zinc-800/60 dark:hover:bg-zinc-800/40">
-          <td className="px-4 py-2.5">
-            <div
-              className={`flex items-center gap-2 ${
-                isChild
-                  ? "relative pl-6 before:absolute before:left-2.5 before:top-0 before:bottom-0 before:w-px before:bg-zinc-200 dark:before:bg-zinc-800"
-                  : ""
-              }`}
-            >
-              {info && (
-                <svg
-                  viewBox={info.viewBox}
-                  className={`flex-shrink-0 fill-zinc-500 dark:fill-zinc-400 ${
-                    isChild ? "h-3.5 w-3.5 opacity-70" : "h-4 w-4 opacity-85"
-                  }`}
-                  dangerouslySetInnerHTML={{ __html: info.pathsHtml }}
-                />
-              )}
-              <span
-                className={
-                  isChild
-                    ? "text-zinc-500 dark:text-zinc-400"
-                    : "font-medium text-zinc-900 dark:text-zinc-100"
-                }
-              >
-                {info?.n ?? stat.code.toUpperCase()}
-              </span>
-              <span className="whitespace-nowrap rounded bg-indigo-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300">
-                {stat.code.toUpperCase()}
-              </span>
-            </div>
-          </td>
-          <td className="px-4 py-2.5 tabular-nums text-zinc-700 dark:text-zinc-300">
-            {stat.cards}
-          </td>
-          <td className="px-4 py-2.5 tabular-nums text-zinc-700 dark:text-zinc-300">
+        <div className={`grid ${ROW_GRID} items-center gap-2 border-b border-zinc-800 px-1 py-2.5`}>
+          <div className={`flex min-w-0 items-center gap-2 ${isChild ? "relative pl-6" : ""}`}>
+            {isChild && (
+              <span className="absolute left-2.5 top-[-11px] bottom-1/2 w-px bg-zinc-800" />
+            )}
+            {info && (
+              <svg
+                viewBox={info.viewBox}
+                className={`flex-shrink-0 fill-zinc-500 ${isChild ? "h-3.5 w-3.5 opacity-60" : "h-4 w-4 opacity-90"}`}
+                dangerouslySetInnerHTML={{ __html: info.pathsHtml }}
+              />
+            )}
+            <span className={`truncate ${isChild ? "text-[13px] text-zinc-500" : "text-[13.5px] font-medium text-zinc-100"}`}>
+              {info?.n ?? stat.code.toUpperCase()}
+            </span>
+            <span className="flex-shrink-0 font-mono text-[10.5px] text-zinc-600">{stat.code.toUpperCase()}</span>
+          </div>
+          <div className="text-right font-mono text-[13px] tabular-nums text-zinc-100">{stat.cards}</div>
+          <div className="text-right font-mono text-[13px] tabular-nums text-emerald-400">
             ${stat.value.toFixed(2)}
-          </td>
-          <td className="px-4 py-2.5">
+          </div>
+          <div className="text-right">
             <button
               onClick={() => setOpenHistory((cur) => (cur === historyKey ? null : historyKey))}
-              className="rounded-md border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-indigo-500 dark:hover:text-indigo-400"
+              className="rounded-md border border-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:border-indigo-400 hover:text-indigo-400"
             >
-              {openHistory === historyKey ? "Hide" : "History"}
+              {isOpen ? "Hide" : "History"}
             </button>
-          </td>
-        </tr>
-        {openHistory === historyKey && (
-          <tr className="border-b border-zinc-100 bg-stone-200 dark:border-zinc-800/60 dark:bg-zinc-800/30">
-            <td colSpan={4} className="px-4 py-4">
-              <HistoryChart byYear={stat.byYear} />
-            </td>
-          </tr>
+          </div>
+        </div>
+        {isOpen && (
+          <div className="border-b border-zinc-800 bg-zinc-950/60 px-1 py-4">
+            <HistoryChart byYear={stat.byYear} years={YEARS} />
+          </div>
         )}
       </Fragment>
     );
@@ -276,67 +260,42 @@ function SetValueInner() {
 
   return (
     <div className="flex flex-col flex-1 items-center bg-zinc-900 px-4 py-8">
-      <div className="w-full max-w-4xl">
-        <Link
-          href={filterSet ? "/reports/sets" : "/reports"}
-          className="text-xs text-zinc-500 hover:text-indigo-600 dark:text-zinc-400 dark:hover:text-indigo-400"
-        >
-          {filterSet ? "← All sets" : "← Reports"}
-        </Link>
+      <div className="w-full max-w-5xl">
+        {filterSet && (
+          <Link href="/mtg/reports/sets" className="text-xs text-zinc-500 hover:text-indigo-400">
+            ← All sets
+          </Link>
+        )}
 
-        <div className="mt-4 overflow-hidden rounded-xl border border-zinc-200 bg-stone-100 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-200 text-left text-sm font-bold text-zinc-900 dark:border-zinc-800">
-                  <th
-                    className="cursor-pointer select-none px-4 py-3 font-medium hover:text-zinc-700 dark:hover:text-zinc-200"
-                    onClick={() => toggleSort("name")}
-                  >
-                    Name <span className="text-[9px] opacity-60">{sortArrow("name")}</span>
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-4 py-3 font-medium hover:text-zinc-700 dark:hover:text-zinc-200"
-                    onClick={() => toggleSort("cards")}
-                  >
-                    Cards <span className="text-[9px] opacity-60">{sortArrow("cards")}</span>
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-4 py-3 font-medium hover:text-zinc-700 dark:hover:text-zinc-200"
-                    onClick={() => toggleSort("value")}
-                  >
-                    Value <span className="text-[9px] opacity-60">{sortArrow("value")}</span>
-                  </th>
-                  <th className="px-4 py-3 font-medium">History</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedGroups.map((g) => (
-                  <Fragment key={g.code}>
-                    {renderRow(g.total, false)}
-                    {g.children
-                      .slice()
-                      .sort((a, b) => b.value - a.value)
-                      .map((child) => renderRow(child, true))}
-                  </Fragment>
-                ))}
-                {sortedGroups.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-10 text-center text-zinc-400">
-                      {stats === null ? "Loading…" : "No cards in your collection yet"}
-                    </td>
-                  </tr>
-                )}
-                {error && (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-10 text-center text-red-500">
-                      Failed to load: {error}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        <div className={`${filterSet ? "mt-4" : ""} grid ${ROW_GRID} items-center gap-2 border-b border-zinc-700 px-1 pb-2.5 font-mono text-[11px] font-medium uppercase tracking-wide text-zinc-500`}>
+          <button onClick={() => toggleSort("name")} className="text-left hover:text-zinc-200">
+            Name <span className="text-[10px] opacity-70">{sortArrow("name")}</span>
+          </button>
+          <button onClick={() => toggleSort("cards")} className="text-right hover:text-zinc-200">
+            Cards <span className="text-[10px] opacity-70">{sortArrow("cards")}</span>
+          </button>
+          <button onClick={() => toggleSort("value")} className="text-right hover:text-zinc-200">
+            Value <span className="text-[10px] opacity-70">{sortArrow("value")}</span>
+          </button>
+          <div className="text-right">History</div>
+        </div>
+
+        <div>
+          {sortedGroups.map((g) => (
+            <Fragment key={g.code}>
+              {renderRow(g.total, false)}
+              {g.children
+                .slice()
+                .sort((a, b) => b.value - a.value)
+                .map((child) => renderRow(child, true))}
+            </Fragment>
+          ))}
+          {sortedGroups.length === 0 && (
+            <div className="px-1 py-10 text-center text-sm text-zinc-500">
+              {stats === null ? "Loading…" : "No cards in your collection yet"}
+            </div>
+          )}
+          {error && <div className="px-1 py-10 text-center text-sm text-red-400">Failed to load: {error}</div>}
         </div>
       </div>
     </div>
@@ -348,53 +307,5 @@ export default function SetValuePage() {
     <Suspense>
       <SetValueInner />
     </Suspense>
-  );
-}
-
-function HistoryChart({ byYear }: { byYear: Record<number, number> }) {
-  const width = 480;
-  const height = 160;
-  const padding = 28;
-
-  const values = YEARS.map((y) => byYear[y] ?? 0);
-  const max = Math.max(...values, 0.01);
-
-  const points = YEARS.map((year, i) => {
-    const x = padding + (i / (YEARS.length - 1)) * (width - padding * 2);
-    const y = height - padding - (values[i] / max) * (height - padding * 2);
-    return { x, y, year, value: values[i] };
-  });
-
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
-
-  return (
-    <svg width={width} height={height} className="max-w-full">
-      <line
-        x1={padding}
-        y1={height - padding}
-        x2={width - padding}
-        y2={height - padding}
-        className="stroke-zinc-300 dark:stroke-zinc-700"
-      />
-      <path d={path} fill="none" className="stroke-indigo-500" strokeWidth={2} />
-      {points.map((p) => (
-        <g key={p.year}>
-          <circle cx={p.x} cy={p.y} r={2.5} className="fill-indigo-500" />
-          {(p.year % 2 === 1 || p.year === YEARS[YEARS.length - 1]) && (
-            <text
-              x={p.x}
-              y={height - padding + 14}
-              textAnchor="middle"
-              className="fill-zinc-400 text-[9px] dark:fill-zinc-500"
-            >
-              {p.year}
-            </text>
-          )}
-          <title>
-            {p.year}: ${p.value.toFixed(2)}
-          </title>
-        </g>
-      ))}
-    </svg>
   );
 }
