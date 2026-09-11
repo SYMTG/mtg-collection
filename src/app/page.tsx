@@ -44,6 +44,14 @@ const PROJECTS: Project[] = [
     accent: "text-emerald-400 bg-emerald-950/40",
   },
   {
+    href: "/y-ms",
+    name: "Y-M-S",
+    code: "YMS",
+    description: "Game dev project with my son — task board for ideas and mechanics.",
+    live: true,
+    accent: "text-sky-400 bg-sky-950/40",
+  },
+  {
     href: "/local-llm",
     name: "Local LLM",
     code: "LLM",
@@ -55,8 +63,8 @@ const PROJECTS: Project[] = [
     href: "/telegram",
     name: "Telegram",
     code: "TG",
-    description: "Telegram bot experiments.",
-    live: false,
+    description: "Whitelisted bot on a VPS, bridged to Discord via a local LLM.",
+    live: true,
     accent: "text-teal-400 bg-teal-950/40",
   },
 ];
