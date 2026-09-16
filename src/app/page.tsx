@@ -7,7 +7,6 @@ type Project = {
   code: string;
   description: string;
   live: boolean;
-  accent: string;
 };
 
 const PROJECTS: Project[] = [
@@ -17,7 +16,6 @@ const PROJECTS: Project[] = [
     code: "MTG",
     description: "Personal Magic: The Gathering collection — sets, prices, sealed inventory.",
     live: true,
-    accent: "text-indigo-400 bg-indigo-950/60",
   },
   {
     href: "/senyacup",
@@ -25,7 +23,6 @@ const PROJECTS: Project[] = [
     code: "SC",
     description: "Game design project — equipment, characters, world.",
     live: true,
-    accent: "text-fuchsia-400 bg-fuchsia-950/40",
   },
   {
     href: "/czn",
@@ -33,7 +30,6 @@ const PROJECTS: Project[] = [
     code: "CZN",
     description: "Data and lore reference for a gacha game roster.",
     live: false,
-    accent: "text-rose-400 bg-rose-950/40",
   },
   {
     href: "/budget",
@@ -41,7 +37,6 @@ const PROJECTS: Project[] = [
     code: "B",
     description: "Personal monthly budget tracking.",
     live: false,
-    accent: "text-emerald-400 bg-emerald-950/40",
   },
   {
     href: "/y-ms",
@@ -49,7 +44,6 @@ const PROJECTS: Project[] = [
     code: "YMS",
     description: "Game dev project with my son — task board for ideas and mechanics.",
     live: true,
-    accent: "text-sky-400 bg-sky-950/40",
   },
   {
     href: "/local-llm",
@@ -57,7 +51,6 @@ const PROJECTS: Project[] = [
     code: "LLM",
     description: "Notes on running language models locally.",
     live: false,
-    accent: "text-amber-400 bg-amber-950/40",
   },
   {
     href: "/telegram",
@@ -65,7 +58,6 @@ const PROJECTS: Project[] = [
     code: "TG",
     description: "Whitelisted bot on a VPS, bridged to Discord via a local LLM.",
     live: true,
-    accent: "text-teal-400 bg-teal-950/40",
   },
 ];
 
@@ -73,19 +65,18 @@ export default function HubPage() {
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-900 px-4 py-12">
       <div className="w-full max-w-3xl">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <p className="font-mono text-[11px] font-medium uppercase tracking-wide text-zinc-500">Projects</p>
+        <div className="mt-3 divide-y divide-zinc-800 border-y border-zinc-800">
           {PROJECTS.map((p) => (
             <Link
               key={p.href}
               href={p.href}
-              className="group flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4 transition hover:border-indigo-400"
+              className="group flex items-center gap-3 px-1 py-3 hover:bg-zinc-950/60"
             >
-              <div
-                className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md font-mono text-[11px] font-semibold ${p.accent}`}
-              >
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-zinc-800 font-mono text-[11px] font-semibold text-zinc-300">
                 {p.code}
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[14.5px] font-medium text-zinc-100 group-hover:text-indigo-400">
                     {p.name}
@@ -98,7 +89,7 @@ export default function HubPage() {
                     {p.live ? "Live" : "Coming soon"}
                   </span>
                 </div>
-                <p className="mt-1 text-[13px] text-zinc-500">{p.description}</p>
+                <p className="mt-0.5 truncate text-[13px] text-zinc-500">{p.description}</p>
               </div>
             </Link>
           ))}
