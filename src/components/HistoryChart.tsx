@@ -25,7 +25,7 @@ export function HistoryChart({
   }));
 
   return (
-    <svg width={width} height={height} className="max-w-full">
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="max-w-full">
       <line
         x1={padding}
         y1={height - padding}
