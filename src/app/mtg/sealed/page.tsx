@@ -38,6 +38,7 @@ type CardmarketLatest = {
   priceFrom: number | null;
   productUrl: string | null;
   snapshotMonth: string | null;
+  collectedAt: string | null;
 };
 
 type CardmarketSeries = {
@@ -50,6 +51,47 @@ type PortfolioSeries = {
   months: string[];
   byMonth: Record<string, number>;
 };
+
+// Cardmarket has one page per set — not per language — so the userscript
+// there can't tell which of your two same-set language variants a Link
+// click was for. Carries the intended language through as a URL param the
+// userscript reads on load, so its own set/language cache (keyed by
+// product name and set code, not by language) doesn't have to guess.
+function withLangHint(url: string, language: string) {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}_cmlang=${encodeURIComponent(language)}`;
+}
+
+type UpdateQueueEntry = { id: string; label: string; url: string };
+
+// Oldest-checked first — same items the Link button already shows on
+// (a snapshot has to exist once before there's a URL to revisit).
+function buildUpdateQueue(
+  items: SealedItem[] | null,
+  cmLatestByProduct: Map<string, CardmarketLatest>,
+  byCode: Map<string, ParsedSet>
+): UpdateQueueEntry[] {
+  if (!items) return [];
+  return items
+    .map((item) => {
+      const product = item.sealed_products;
+      const cm = product ? cmLatestByProduct.get(product.id) : undefined;
+      if (!product || !cm?.productUrl) return null;
+      const set = byCode.get(product.set_code.toLowerCase());
+      return {
+        id: item.id,
+        label: `${set?.n ?? product.set_code} — ${product.product_type} (${product.language})`,
+        url: withLangHint(cm.productUrl, product.language),
+        // Exact timestamp, not the month string — a re-save within the
+        // same calendar month overwrites that month's row (by design), so
+        // every item checked this month shares the same snapshot_month and
+        // sorting by it can't tell "just now" from "three weeks ago".
+        collectedAt: cm.collectedAt ?? "",
+      };
+    })
+    .filter((x): x is UpdateQueueEntry & { collectedAt: string } => x != null)
+    .sort((a, b) => a.collectedAt.localeCompare(b.collectedAt));
+}
 
 function topByValue(
   items: SealedItem[] | null,
@@ -99,16 +141,22 @@ export default function StoragePage() {
   const [portfolioSeries, setPortfolioSeries] = useState<PortfolioSeries | null>(null);
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
 
+  // Step-by-step update session: every "open" is a click you make, never a
+  // timer — this only remembers where you are in the queue between clicks.
+  const [updateSession, setUpdateSession] = useState<{ queue: UpdateQueueEntry[]; index: number } | null>(null);
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{
     setCode: string;
     language: string;
     quantity: number;
     note: string;
+    cardmarketUrl: string;
   } | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
+  const [showAddForm, setShowAddForm] = useState(false);
   const [setCode, setSetCode] = useState(() => parentSets[0]?.c ?? "");
   const [productType, setProductType] = useState(PRODUCT_TYPES[0]);
   const [language, setLanguage] = useState(LANGUAGES[0]);
@@ -138,7 +186,7 @@ export default function StoragePage() {
       // of history have piled up, so it never hits Supabase's row cap.
       const { data: cmRows } = await supabase
         .from("cardmarket_price_snapshots_latest")
-        .select("product_id,available_items,price_from,product_url,snapshot_month")
+        .select("product_id,available_items,price_from,product_url,snapshot_month,collected_at")
         .in("product_id", productIds);
       for (const row of cmRows ?? []) {
         cmLatestByProduct.set(row.product_id as string, {
@@ -146,6 +194,7 @@ export default function StoragePage() {
           priceFrom: row.price_from,
           productUrl: row.product_url,
           snapshotMonth: row.snapshot_month ? (row.snapshot_month as string).slice(0, 7) : null,
+          collectedAt: row.collected_at,
         });
       }
     }
@@ -285,6 +334,7 @@ export default function StoragePage() {
   }
 
   function startEdit(item: SealedItem) {
+    const cm = item.sealed_products ? cmLatestByProduct.get(item.sealed_products.id) : undefined;
     setEditingId(item.id);
     setEditError(null);
     setEditDraft({
@@ -292,6 +342,7 @@ export default function StoragePage() {
       language: item.sealed_products?.language ?? LANGUAGES[0],
       quantity: item.quantity,
       note: item.note ?? "",
+      cardmarketUrl: cm?.productUrl ?? "",
     });
   }
 
@@ -326,6 +377,24 @@ export default function StoragePage() {
         .eq("id", item.id);
       if (updateError) throw updateError;
 
+      // Fixes a snapshot that was saved from the wrong Cardmarket page (the
+      // Link button always opens whatever URL the latest snapshot recorded)
+      // without having to revisit that page just to re-save it there. Only
+      // when the product itself didn't change in this edit — otherwise the
+      // draft URL was filled in for a different product and would land on
+      // whichever existing product the new set code/language now points to.
+      const productUnchanged = product.id === item.sealed_products?.id;
+      const cm = cmLatestByProduct.get(product.id);
+      const newUrl = editDraft.cardmarketUrl.trim() || null;
+      if (productUnchanged && cm?.snapshotMonth && newUrl !== cm.productUrl) {
+        const { error: urlError } = await supabase
+          .from("cardmarket_price_snapshots")
+          .update({ product_url: newUrl })
+          .eq("product_id", product.id)
+          .eq("snapshot_month", `${cm.snapshotMonth}-01`);
+        if (urlError) throw urlError;
+      }
+
       cancelEdit();
       applyStorageData(await fetchStorageData());
     } catch (err) {
@@ -342,31 +411,44 @@ export default function StoragePage() {
 
   const [search, setSearch] = useState("");
   const [onlyOutdated, setOnlyOutdated] = useState(false);
+  const [productFilter, setProductFilter] = useState<"all" | "boxes" | "packs" | "other">("all");
 
-  // Filtered by name/code search and the "only outdated" toggle, then
-  // processed (has a Link, i.e. at least one live snapshot) first, then by
+  // Shared by the visible table (sortedItems) and by Start update, so the
+  // update queue walks exactly the items the search box, Outdated toggle
+  // and Boxes/Packs/Other filter currently show — not the whole collection.
+  const filterItems = useCallback(
+    (candidates: SealedItem[], cmMap: Map<string, CardmarketLatest>) => {
+      const q = search.trim().toLowerCase();
+      return candidates.filter((item) => {
+        const product = item.sealed_products;
+        if (!product) return false;
+
+        if (onlyOutdated) {
+          const cm = cmMap.get(product.id);
+          if (cm?.snapshotMonth === currentMonth) return false;
+        }
+
+        if (productFilter === "boxes" && product.product_type !== "Booster Box") return false;
+        if (productFilter === "packs" && product.product_type !== "Booster Pack") return false;
+        if (productFilter === "other" && (product.product_type === "Booster Box" || product.product_type === "Booster Pack")) return false;
+
+        if (q) {
+          const set = byCode.get(product.set_code.toLowerCase());
+          const haystack = `${set?.n ?? ""} ${product.set_code} ${product.product_type}`.toLowerCase();
+          if (!haystack.includes(q)) return false;
+        }
+
+        return true;
+      });
+    },
+    [search, onlyOutdated, productFilter, currentMonth, byCode]
+  );
+
+  // Processed (has a Link, i.e. at least one live snapshot) first, then by
   // Value descending within each group.
   const sortedItems = useMemo(() => {
     if (!items) return null;
-    const q = search.trim().toLowerCase();
-
-    const filtered = items.filter((item) => {
-      const product = item.sealed_products;
-      if (!product) return false;
-
-      if (onlyOutdated) {
-        const cm = cmLatestByProduct.get(product.id);
-        if (cm?.snapshotMonth === currentMonth) return false;
-      }
-
-      if (q) {
-        const set = byCode.get(product.set_code.toLowerCase());
-        const haystack = `${set?.n ?? ""} ${product.set_code} ${product.product_type}`.toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-
-      return true;
-    });
+    const filtered = filterItems(items, cmLatestByProduct);
 
     return filtered.sort((a, b) => {
       const aCm = a.sealed_products ? cmLatestByProduct.get(a.sealed_products.id) : undefined;
@@ -379,7 +461,17 @@ export default function StoragePage() {
       const bValue = bCm?.priceFrom != null ? bCm.priceFrom * b.quantity : -Infinity;
       return bValue - aValue;
     });
-  }, [items, cmLatestByProduct, search, onlyOutdated, currentMonth, byCode]);
+  }, [items, cmLatestByProduct, filterItems]);
+
+  // While a step-by-step update session is running, the table shows only
+  // the one row being worked on — nothing to scroll past on a long
+  // collection, and no risk of acting on the wrong row by mistake.
+  const visibleItems = useMemo(() => {
+    if (!sortedItems) return sortedItems;
+    if (!updateSession) return sortedItems;
+    const currentId = updateSession.queue[updateSession.index]?.id;
+    return sortedItems.filter((item) => item.id === currentId);
+  }, [sortedItems, updateSession]);
 
   const topBoosters = useMemo(
     () => topByValue(items, cmLatestByProduct, "Booster Pack", byCode),
@@ -389,6 +481,48 @@ export default function StoragePage() {
     () => topByValue(items, cmLatestByProduct, "Booster Box", byCode),
     [items, cmLatestByProduct, byCode]
   );
+
+  const updateQueuePreview = useMemo(
+    () => buildUpdateQueue(items ? filterItems(items, cmLatestByProduct) : null, cmLatestByProduct, byCode),
+    [items, cmLatestByProduct, byCode, filterItems]
+  );
+  const [startingUpdate, setStartingUpdate] = useState(false);
+
+  // Snapshots are written straight to Supabase from the Cardmarket tab, not
+  // through this page, so this page's own state doesn't know about them
+  // until it re-fetches — re-check the DB right before building the queue,
+  // rather than trusting whatever was already in memory from page load.
+  async function startUpdateSession() {
+    setStartingUpdate(true);
+    const result = await fetchStorageData();
+    applyStorageData(result);
+    setStartingUpdate(false);
+    if ("error" in result) return;
+
+    const queue = buildUpdateQueue(filterItems(result.items, result.cmLatestByProduct), result.cmLatestByProduct, byCode);
+    if (queue.length === 0) return;
+    window.open(queue[0].url, "_blank", "noopener,noreferrer");
+    setUpdateSession({ queue, index: 0 });
+  }
+
+  function reopenCurrentUpdate() {
+    if (!updateSession) return;
+    window.open(updateSession.queue[updateSession.index].url, "_blank", "noopener,noreferrer");
+  }
+
+  function nextUpdate() {
+    setUpdateSession((session) => {
+      if (!session) return session;
+      const nextIndex = session.index + 1;
+      if (nextIndex >= session.queue.length) return null;
+      window.open(session.queue[nextIndex].url, "_blank", "noopener,noreferrer");
+      return { ...session, index: nextIndex };
+    });
+  }
+
+  function stopUpdateSession() {
+    setUpdateSession(null);
+  }
 
   const boosterTotal =
     items?.reduce((sum, i) => (i.sealed_products?.product_type === "Booster Pack" ? sum + i.quantity : sum), 0) ?? 0;
@@ -480,6 +614,7 @@ export default function StoragePage() {
           </div>
         )}
 
+        {showAddForm && (
         <form
           onSubmit={handleAdd}
           className="mt-6 flex flex-wrap items-end gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4"
@@ -552,6 +687,13 @@ export default function StoragePage() {
           </div>
 
           <button
+            type="button"
+            onClick={() => setShowAddForm(false)}
+            className="rounded-md border border-zinc-800 px-4 py-1.5 text-[13px] font-medium text-zinc-300 hover:border-zinc-600"
+          >
+            Cancel
+          </button>
+          <button
             type="submit"
             disabled={saving || !setCode}
             className="rounded-md bg-indigo-600 px-4 py-1.5 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
@@ -559,10 +701,21 @@ export default function StoragePage() {
             {saving ? "Adding…" : "Add"}
           </button>
         </form>
+        )}
 
         {loadError && <p className="mt-3 text-sm text-red-400">{loadError}</p>}
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setShowAddForm((v) => !v)}
+            className={`rounded-md border px-3 py-1.5 text-[13px] font-medium ${
+              showAddForm
+                ? "border-indigo-400 bg-indigo-950/60 text-indigo-300"
+                : "border-zinc-800 text-zinc-400 hover:border-indigo-400 hover:text-indigo-400"
+            }`}
+          >
+            + Add item
+          </button>
           <input
             type="text"
             value={search}
@@ -579,13 +732,73 @@ export default function StoragePage() {
             }`}
           >
             <span className="h-2 w-2 rounded-full bg-rose-500" />
-            Only outdated
+            Outdated
           </button>
-          {(search || onlyOutdated) && (
+
+          <div className="flex items-center gap-1.5">
+            {(
+              [
+                ["boxes", "Boxes"],
+                ["packs", "Packs"],
+                ["other", "Other"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setProductFilter((v) => (v === value ? "all" : value))}
+                className={`rounded-md border px-3 py-1.5 text-[13px] font-medium ${
+                  productFilter === value
+                    ? "border-indigo-400 bg-indigo-950/60 text-indigo-300"
+                    : "border-zinc-800 text-zinc-400 hover:border-zinc-600"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {(search || onlyOutdated || productFilter !== "all") && (
             <span className="text-[12px] text-zinc-500">
               {sortedItems?.length ?? 0} of {items?.length ?? 0}
             </span>
           )}
+
+          <div className="ml-auto flex items-center gap-2">
+            {!updateSession ? (
+              <button
+                onClick={startUpdateSession}
+                disabled={startingUpdate || updateQueuePreview.length === 0}
+                className="rounded-md bg-indigo-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+              >
+                {startingUpdate ? "Refreshing…" : `Start update (${updateQueuePreview.length})`}
+              </button>
+            ) : (
+              <>
+                <span className="text-[12.5px] text-zinc-400">
+                  {updateSession.index + 1} of {updateSession.queue.length} —{" "}
+                  {updateSession.queue[updateSession.index].label}
+                </span>
+                <button
+                  onClick={reopenCurrentUpdate}
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-[12.5px] text-zinc-300 hover:bg-zinc-700"
+                >
+                  Reopen
+                </button>
+                <button
+                  onClick={nextUpdate}
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-indigo-500"
+                >
+                  Next
+                </button>
+                <button
+                  onClick={stopUpdateSession}
+                  className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-[12.5px] text-zinc-300 hover:bg-zinc-700"
+                >
+                  Stop
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="mt-4 grid grid-cols-[20px_1fr_55px_50px_60px_75px_85px_172px] items-center gap-2 border-b border-zinc-700 px-1 pb-2.5 font-mono text-[11px] font-medium uppercase tracking-wide text-zinc-500">
@@ -600,7 +813,7 @@ export default function StoragePage() {
         </div>
 
         <div>
-          {sortedItems?.map((item) => {
+          {visibleItems?.map((item) => {
             const product = item.sealed_products;
             const set = product ? byCode.get(product.set_code.toLowerCase()) : undefined;
             const cm = product ? cmLatestByProduct.get(product.id) : undefined;
@@ -668,7 +881,7 @@ export default function StoragePage() {
                   )}
                   {cm?.productUrl && (
                     <a
-                      href={cm.productUrl}
+                      href={product?.language ? withLangHint(cm.productUrl, product.language) : cm.productUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="rounded-md border border-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-400 hover:border-indigo-400 hover:text-indigo-400"
@@ -748,6 +961,32 @@ export default function StoragePage() {
                         className="w-full rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[13px] text-zinc-100 placeholder-zinc-600 outline-none focus:border-indigo-400"
                       />
                     </div>
+                    <div className="flex w-full min-w-[260px] flex-1 flex-col gap-1">
+                      <label className="font-mono text-[10.5px] uppercase tracking-wide text-zinc-500">
+                        Cardmarket link (what the Link button opens)
+                      </label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={editDraft?.cardmarketUrl ?? ""}
+                          onChange={(e) => setEditDraft((d) => (d ? { ...d, cardmarketUrl: e.target.value } : d))}
+                          placeholder="https://www.cardmarket.com/en/Magic/Products/..."
+                          disabled={!cm?.snapshotMonth}
+                          className="w-full rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[13px] text-zinc-100 placeholder-zinc-600 outline-none focus:border-indigo-400 disabled:opacity-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setEditDraft((d) => (d ? { ...d, cardmarketUrl: "" } : d))}
+                          disabled={!cm?.snapshotMonth}
+                          className="rounded-md border border-zinc-800 px-2.5 py-1.5 text-[11px] font-medium text-zinc-400 hover:border-zinc-600 disabled:opacity-50"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      {!cm?.snapshotMonth && (
+                        <p className="text-[11px] text-zinc-600">Take a snapshot first — there&apos;s nothing to fix yet.</p>
+                      )}
+                    </div>
                     <button
                       onClick={cancelEdit}
                       className="rounded-md border border-zinc-800 px-4 py-1.5 text-[13px] font-medium text-zinc-300 hover:border-zinc-600"
@@ -808,7 +1047,7 @@ export default function StoragePage() {
               Nothing in storage yet — add your first sealed item above.
             </div>
           )}
-          {items && items.length > 0 && sortedItems?.length === 0 && (
+          {items && items.length > 0 && visibleItems?.length === 0 && (
             <div className="px-1 py-10 text-center text-sm text-zinc-500">
               No items match the current search/filter.
             </div>

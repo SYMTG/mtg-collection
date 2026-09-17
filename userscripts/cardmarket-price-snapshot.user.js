@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Cardmarket price snapshot
 // @namespace    symtg.mtg-collection
-// @version      3.2.0
-// @description  Manually save a snapshot (name, available items, price) of a Cardmarket sealed-product page into Supabase, matched to the site's sealed_products. Only runs when you click the button on a page you opened yourself — no background/scheduled requests.
+// @version      3.7.0
+// @description  Manually save a snapshot (name, available items, price) of a Cardmarket sealed-product page into Supabase, matched to the site's sealed_products. Only ever opens the review panel because of a click you made — either the floating button here, or the site's own Link/Next queue — and never submits without you clicking Save. No background/scheduled requests.
 // @match        https://www.cardmarket.com/*/Magic/Products/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -188,6 +188,14 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
   }
 
+  // Set by the site's Link button (?_cmlang=RUS) when two of your rows
+  // share this same Cardmarket page (one product page covers every
+  // language) — tells this specific visit which one you meant, so it
+  // doesn't fall back to whatever language was last learned for the set.
+  function urlLangHint() {
+    return new URLSearchParams(location.search).get("_cmlang");
+  }
+
   // Confirmed against a saved copy of a real product page (Cloudflare
   // blocks live fetches, so this couldn't be checked any other way): each
   // offer is a `.article-row`; its language sits as plain text in
@@ -298,7 +306,7 @@
       language: byName.language || byCode.language,
     };
     const offers = scanOffers();
-    const language = learned.language || "ENG";
+    const language = urlLangHint() || learned.language || "ENG";
     const cmMin = cmMinForLanguage(offers, language);
 
     // Sum of the loaded offer rows on a fully-loaded page (more accurate
@@ -366,6 +374,53 @@
     });
     if (!rows || !rows[0]) throw new Error("sealed_products upsert returned no row");
     return rows[0].id;
+  }
+
+  // Looks up every product_type/language combo already on file for this set
+  // code, straight from Supabase (ground truth, unlike the local GM cache).
+  // A guessed productType/language that doesn't match one of these will
+  // upsert into a brand-new row instead of the real one — this is how the
+  // orphaned-duplicate bug happened (see cleanup notes in git history).
+  async function fetchExistingCombos(setCode) {
+    if (!setCode) return [];
+    try {
+      return (await restRequest({
+        method: "GET",
+        path: "/rest/v1/sealed_products",
+        query: `set_code=eq.${encodeURIComponent(setCode.toLowerCase().trim())}&select=product_type,language`,
+      })) || [];
+    } catch {
+      return [];
+    }
+  }
+
+  // A set code alone doesn't disambiguate when several product types share
+  // it (e.g. frf has Booster Box, Booster Pack x2 languages, Prerelease
+  // Kit) — the local by-code cache then just repeats whatever type/language
+  // was last learned for ANY of them, which is wrong for the others. The
+  // exact product name is specific to one page, and cardmarket_price_
+  // snapshots.product_name already carries it (including for rows created
+  // by a one-off CSV import that never touched this browser's local
+  // cache) — so a name match here is more trustworthy than by-code.
+  async function fetchProductByExactName(productName) {
+    if (!productName) return null;
+    try {
+      const snaps = await restRequest({
+        method: "GET",
+        path: "/rest/v1/cardmarket_price_snapshots",
+        query: `product_name=eq.${encodeURIComponent(productName)}&select=product_id&order=collected_at.desc&limit=1`,
+      });
+      const productId = snaps && snaps[0] && snaps[0].product_id;
+      if (!productId) return null;
+      const products = await restRequest({
+        method: "GET",
+        path: "/rest/v1/sealed_products",
+        query: `id=eq.${productId}&select=set_code,product_type,language`,
+      });
+      return (products && products[0]) || null;
+    } catch {
+      return null;
+    }
   }
 
   // Upsert on (product_id, snapshot_month): a second save in the same
@@ -445,6 +500,7 @@
                 padding:5px 7px; font-size:13px; }
         hr { border:none; border-top:1px solid #3a3a3f; margin:10px 0; }
         .hint { font-size:11px; color:#71717a; margin:-4px 0 10px; line-height:1.4; }
+        .hint.warn { color:#fbbf24; }
         .actions { display:flex; gap:8px; margin-top:10px; }
         button { flex:1; border:none; border-radius:4px; padding:7px; font-size:13px; cursor:pointer; }
         .save { background:#6366f1; color:white; font-weight:600; }
@@ -465,6 +521,7 @@
           <div class="row"><label>Product type</label><select id="f-type">${typeOptions}</select></div>
           <div class="row"><label>Language</label><select id="f-lang">${langOptions}</select></div>
         </div>
+        <p class="hint" id="combo-hint"></p>
         <div class="actions">
           <button class="cancel" id="btn-cancel">Cancel</button>
           <button class="save" id="btn-save">Save</button>
@@ -484,7 +541,82 @@
     shadow.getElementById("f-lang").onchange = (e) => {
       const recomputed = cmMinForLanguage(parsed.offers, e.target.value);
       if (recomputed != null) shadow.getElementById("f-from").value = recomputed.toFixed(2);
+      checkCombo();
     };
+
+    // Checks the current Product type/Language selection against every
+    // combo already on file for this set code (fetched once below). A
+    // combo that matches nothing on file will silently create a brand-new
+    // sealed_products row on save instead of reusing the real one, so this
+    // is flagged before Save rather than discovered later as a stray row.
+    let existingCombos = [];
+    function checkCombo() {
+      const hintEl = shadow.getElementById("combo-hint");
+      if (!existingCombos.length) {
+        hintEl.className = "hint";
+        hintEl.textContent = "";
+        return;
+      }
+      const type = shadow.getElementById("f-type").value;
+      const lang = shadow.getElementById("f-lang").value;
+      const matches = existingCombos.some((c) => c.product_type === type && c.language === lang);
+      const list = existingCombos.map((c) => `${c.product_type}/${c.language}`).join(", ");
+      if (matches) {
+        hintEl.className = "hint";
+        hintEl.textContent = `On file for this set: ${list}.`;
+      } else {
+        hintEl.className = "hint warn";
+        hintEl.textContent = `⚠ No match on file — this will create a NEW product row. On file for this set: ${list}.`;
+      }
+    }
+    shadow.getElementById("f-type").onchange = checkCombo;
+    shadow.getElementById("f-set").onchange = async () => {
+      existingCombos = await fetchExistingCombos(shadow.getElementById("f-set").value.trim());
+      checkCombo();
+    };
+    function applyMatch(match) {
+      shadow.getElementById("f-set").value = match.setCode;
+      shadow.getElementById("f-type").value = match.productType;
+      shadow.getElementById("f-lang").value = match.language;
+      const recomputed = cmMinForLanguage(parsed.offers, match.language);
+      if (recomputed != null) shadow.getElementById("f-from").value = recomputed.toFixed(2);
+    }
+
+    (async () => {
+      // Exact product name match beats a set-code-only guess — it's the
+      // only signal specific enough to tell apart several product types
+      // sharing one set code (see fetchProductByExactName above).
+      const byName = await fetchProductByExactName(parsed.productName);
+      if (byName) {
+        const current = {
+          setCode: shadow.getElementById("f-set").value.trim().toLowerCase(),
+          productType: shadow.getElementById("f-type").value,
+          language: shadow.getElementById("f-lang").value,
+        };
+        if (
+          byName.set_code !== current.setCode ||
+          byName.product_type !== current.productType ||
+          byName.language !== current.language
+        ) {
+          applyMatch({ setCode: byName.set_code, productType: byName.product_type, language: byName.language });
+        }
+        existingCombos = await fetchExistingCombos(byName.set_code);
+        checkCombo();
+        return;
+      }
+
+      const combos = await fetchExistingCombos(parsed.setCode);
+      existingCombos = combos;
+      // Exactly one combo ever saved for this set code — near-certainly the
+      // right one, so auto-correct a guess that doesn't already match it
+      // rather than relying on the user to notice a wrong dropdown. With
+      // more than one on file, an unnamed page can't be disambiguated this
+      // way — checkCombo()'s warning is the safety net instead.
+      if (combos.length === 1 && (combos[0].product_type !== parsed.productType || combos[0].language !== parsed.language)) {
+        applyMatch({ setCode: parsed.setCode, productType: combos[0].product_type, language: combos[0].language });
+      }
+      checkCombo();
+    })();
 
     shadow.getElementById("btn-cancel").onclick = close;
     shadow.getElementById("btn-save").onclick = async () => {
@@ -541,4 +673,14 @@
   }
 
   injectTriggerButton();
+
+  // ?_cmlang is only ever present when this page was opened from the
+  // site's own Link/Next queue — a real click you made, just on the site
+  // rather than on the floating button here. Skips straight to the review
+  // panel so all that's left is a glance and one Save click; never
+  // auto-submits, so a parsing hiccup is still something you'd see before
+  // it reaches Supabase, not after.
+  if (urlLangHint() && ensureConfig()) {
+    showOverlay(extractData());
+  }
 })();

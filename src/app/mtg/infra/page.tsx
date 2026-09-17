@@ -25,9 +25,13 @@ flowchart TD
         CARDS["cards — 105 407 карт<br/>каталог из Scryfall bulk data"]
         ITEMS["collection_items<br/>карты в коллекции"]
         PRICES["price_history<br/>цена карт по годам, 2015–2026"]
-        SPROD["sealed_products<br/>справочник: сет + тип + язык"]
+        SPROD["sealed_products<br/>справочник: сет + тип + язык, 121 товар"]
         SITEMS["sealed_items<br/>sealed-товары в наличии"]
-        SPRICES["sealed_price_history<br/>цена sealed по годам, 2015–2025"]
+        CMSNAP["cardmarket_price_snapshots<br/>+ view _latest, 1073 записи"]
+    end
+
+    subgraph CM["🌐 Cardmarket.com (Tampermonkey)"]
+        USERSCRIPT["userscript в браузере<br/>клик Save на открытой странице"]
     end
 
     subgraph SCRYFALL["🌐 Scryfall API"]
@@ -41,14 +45,16 @@ flowchart TD
     PROD --> PRICES
     PROD --> SPROD
     PROD --> SITEMS
-    PROD --> SPRICES
+    PROD --> CMSNAP
     PROD -- "Sync prices, только коллекция" --> SCRY
+    USERSCRIPT -- "клик Save snapshot, публичный ключ" --> CMSNAP
+    USERSCRIPT -. "то же для новых товаров" .-> SPROD
     SCRIPTS -. "заливка, секретный ключ (только локально)" .-> CARDS
     SCRIPTS -. "заливка" .-> ITEMS
     SCRIPTS -. "заливка" .-> PRICES
-    SCRIPTS -. "заливка (103 товара)" .-> SPROD
+    SCRIPTS -. "заливка (121 товар)" .-> SPROD
     SCRIPTS -. "заливка" .-> SITEMS
-    SCRIPTS -. "заливка" .-> SPRICES
+    SCRIPTS -. "историческая заливка по годам" .-> CMSNAP
 
     subgraph POC["📦 Устарело: старый POC"]
         POCURL["mtg-collection-poc.vercel.app"]
@@ -59,6 +65,7 @@ flowchart TD
     style GH fill:#27272a,stroke:#71717a,color:#e4e4e7
     style VERCEL fill:#27272a,stroke:#818cf8,color:#e4e4e7
     style SB fill:#052e2b,stroke:#10b981,color:#d1fae5
+    style CM fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff
     style SCRYFALL fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff
     style POC fill:#3f2d0a,stroke:#f59e0b,color:#fde68a
 `;
@@ -66,7 +73,7 @@ flowchart TD
 const STATS = [
   { value: "$0", unit: "/мес", label: "Vercel Hobby + Supabase Free" },
   { value: "105 407", unit: "", label: "карт в каталоге cards" },
-  { value: "103", unit: "", label: "sealed-товара (sealed_products)" },
+  { value: "121", unit: "", label: "sealed-товара (sealed_products)" },
   { value: "3 / ~117", unit: "", label: "вкладок Excel разобрано" },
 ];
 
