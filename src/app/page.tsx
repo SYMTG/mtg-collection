@@ -21,15 +21,15 @@ const PROJECTS: Project[] = [
     href: "/senyacup",
     name: "Senyacup",
     code: "SC",
-    description: "Game design project — equipment, characters, world.",
-    live: true,
+    description: "Game design project",
+    live: false,
   },
   {
     href: "/czn",
     name: "CZN",
     code: "CZN",
     description: "Data and lore reference for a gacha game roster.",
-    live: false,
+    live: true,
   },
   {
     href: "/budget",
@@ -42,7 +42,7 @@ const PROJECTS: Project[] = [
     href: "/y-ms",
     name: "Y-M-S",
     code: "YMS",
-    description: "Game dev project with my son — task board for ideas and mechanics.",
+    description: "Family game dev project",
     live: true,
   },
   {
